@@ -1,0 +1,12 @@
+anchor=top-right
+width=360
+height=120 
+margin=12
+padding=14
+border-size=2
+
+background-color=#1e2028
+text-color=#e6e6eb
+border-color=#a6aab5
+max-visible=5
+default-timeout=5000
