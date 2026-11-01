@@ -4,12 +4,12 @@ Hey! This is my beginner-friendly Arch Linux setup for a SwayFX desktop. It inst
 
 It’s best suited for a **fresh, minimal Arch Linux installation**. You don’t need to install a desktop environment first, but you do need an internet connection and a regular user account with `sudo` access.
 
-> **Nerds, don’t forget the wallpapers!** Make sure the `Wallpapers/` folder is present and installed where the Sway config expects it, or the wallpaper won’t load.
-
 ## What this setup does
 
 - Installs the packages listed in `packages.txt` using `yay`
 - Applies configuration files from `templates/`
+- Embeds and installs the wallpapers automatically
+- Uses `/home/$USER` in the wallpaper path instead of a hard-coded username
 - Offers to install the LazyVim starter for Neovim
 - Adds Starship, Fastfetch, and completion setup to `~/.zshrc`
 - Changes your login shell to Zsh
@@ -40,9 +40,9 @@ Follow the prompts. The installer will ask for your password when it needs `sudo
 
 ## Install a prebuilt binary
 
-If I publish a binary under **Releases**:
+If a prebuilt binary is available under **Releases**:
 
-1. Download the binary for your system.
+1. Download the binary for your system from the repository’s Releases page.
 2. Open a terminal in the download folder.
 3. Make it executable and run it:
 
@@ -51,29 +51,9 @@ chmod +x Simple-Fast-Arch-Setup
 ./Simple-Fast-Arch-Setup
 ```
 
-Only run binaries you trust. If you’d rather inspect or build the program yourself, use the source installation steps above.
-
 ## Wallpapers
 
-Keep the wallpaper files in a `Wallpapers/` folder:
-
-```text
-Wallpapers/
-├── Wallpaper-1.jpg
-├── Wallpaper-2.png
-├── Wallpaper-3.png
-└── Wallpaper-4.png
-```
-
-My Sway config currently points to:
-
-```text
-/home/nerd/Wallpapers/Wallpaper-3.png
-```
-
-That path uses my username, so change `/home/nerd` in `templates/sway/config` to your own home-directory path. Put the `Wallpapers/` folder in the location your Sway config points to.
-
-**The current installer does not copy the wallpaper files automatically.** Copy the folder to the configured location yourself, or update the installer to do it.
+The wallpapers are embedded in the installer program and installed automatically. The wallpaper path uses `/home/$USER`, so it works with your home directory without requiring you to change a hard-coded username or manually copy wallpaper files.
 
 ## Keybindings
 
@@ -116,7 +96,6 @@ In resize mode, use `H/J/K/L` or the arrow keys to resize the focused container.
 - Edit `packages.txt` to change which packages get installed.
 - Edit files under `templates/` to change the desktop configurations.
 - Edit `ly.config` to customize Ly.
-- Update the wallpaper path in `templates/sway/config` to match where you put your wallpapers.
 
 Review your changes before running the installer.
 
@@ -129,3 +108,4 @@ If you find the project useful, please **give it a star on GitHub** ⭐ It helps
 ## License
 
 See [`LICENSE`](LICENSE) for the license.
+

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -11,7 +12,7 @@ import (
 	"strings"
 )
 
-//go:embed packages.txt templates ly.config
+//go:embed packages.txt templates ly.config Wallpapers
 var embeddedFiles embed.FS
 
 func status(message string) {
@@ -30,6 +31,26 @@ func run(dir, name string, args ...string) error {
 func fail(message string, err error) {
 	fmt.Fprintf(os.Stderr, "[-] %s: %v\n", message, err)
 	os.Exit(1)
+}
+
+func askYesNo(prompt string) bool {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("%s [yes/no]: ", prompt)
+		answer, err := reader.ReadString('\n')
+		if err != nil && len(answer) == 0 {
+			fmt.Fprintln(os.Stderr, "\n[-] Could not read your response; defaulting to no.")
+			return false
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "yes", "y":
+			return true
+		case "no", "n":
+			return false
+		default:
+			fmt.Println("Please enter yes or no.")
+		}
+	}
 }
 
 func readPackages() ([]string, error) {
@@ -67,8 +88,9 @@ func readPackages() ([]string, error) {
 }
 
 func installYay() {
+	status("Checking if 'yay' AUR helper is installed")
 	if _, err := exec.LookPath("yay"); err == nil {
-		status("yay is already installed")
+		status("'yay' is already installed and ready")
 		return
 	}
 
@@ -76,7 +98,7 @@ func installYay() {
 		fail("sudo is required to install prerequisites", err)
 	}
 
-	status("Installing build prerequisites")
+	status("Installing build prerequisites (git, base-devel)")
 	if err := run("", "sudo", "pacman", "-S", "--needed", "git", "base-devel"); err != nil {
 		fail("Could not install prerequisites", err)
 	}
@@ -89,20 +111,26 @@ func installYay() {
 
 	yayDir := filepath.Join(workDir, "yay")
 
-	status("Downloading yay")
+	status("Cloning yay repository from AUR")
 	if err := run("", "git", "clone", "--depth=1", "https://aur.archlinux.org/yay.git", yayDir); err != nil {
 		fail("Could not download yay", err)
 	}
 
-	status("Installing yay")
+	status("Building and installing yay")
 	if err := run(yayDir, "makepkg", "-si"); err != nil {
 		fail("Could not build or install yay", err)
 	}
 }
 
 func installPackages(packages []string) {
+	status("Synchronizing package databases (yay -Sy)")
+	if err := run("", "yay", "-Sy"); err != nil {
+		fail("Could not update package databases", err)
+	}
+
 	var missing []string
 
+	status("Checking package installation status")
 	for _, name := range packages {
 		cmd := exec.Command("yay", "-Q", name)
 		if cmd.Run() == nil {
@@ -117,7 +145,7 @@ func installPackages(packages []string) {
 		return
 	}
 
-	status("Installing missing packages")
+	status("Installing missing packages from official repositories and AUR")
 	args := append([]string{"-S", "--needed"}, missing...)
 	if err := run("", "yay", args...); err != nil {
 		fail("Could not install packages", err)
@@ -130,7 +158,7 @@ func installTemplates() {
 		fail("Could not find the user config directory", err)
 	}
 
-	status("Applying configuration templates")
+	status("Applying configuration templates from the embedded directory")
 
 	err = fs.WalkDir(embeddedFiles, "templates", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -154,13 +182,28 @@ func installTemplates() {
 		}
 
 		destination := filepath.Join(configDir, filepath.FromSlash(relativePath))
-
-		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+		content, err := embeddedFiles.ReadFile(path)
+		if err != nil {
 			return err
 		}
 
-		content, err := embeddedFiles.ReadFile(path)
-		if err != nil {
+		// Check if file already exists
+		if existingData, err := os.ReadFile(destination); err == nil {
+			if bytes.Equal(existingData, content) {
+				fmt.Printf("[+] Template %s already exists and is up to date.\n", relativePath)
+				return nil
+			} else {
+				fmt.Printf("[+] Template %s already exists but differs from embedded version.\n", relativePath)
+				if !askYesNo(fmt.Sprintf("Do you want to overwrite %s?", relativePath)) {
+					fmt.Printf("[+] Skipping %s\n", relativePath)
+					return nil
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+
+		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 			return err
 		}
 
@@ -172,7 +215,7 @@ func installTemplates() {
 			return err
 		}
 
-		fmt.Printf("[+] Applied %s\n", destination)
+		fmt.Printf("[+] Applied configuration file: %s\n", destination)
 		return nil
 	})
 
@@ -181,14 +224,85 @@ func installTemplates() {
 	}
 }
 
+func installWallpapers() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fail("Could not find the user's home directory", err)
+	}
+
+	destinationDir := filepath.Join(homeDir, "Wallpapers")
+	if err := os.MkdirAll(destinationDir, 0755); err != nil {
+		fail("Could not create ~/Wallpapers", err)
+	}
+
+	entries, err := embeddedFiles.ReadDir("Wallpapers")
+	if err != nil {
+		fail("Could not read embedded Wallpapers directory", err)
+	}
+
+	status("Installing wallpapers to ~/Wallpapers")
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		embeddedPath := filepath.ToSlash(filepath.Join("Wallpapers", name))
+
+		content, err := embeddedFiles.ReadFile(embeddedPath)
+		if err != nil {
+			fail("Could not read embedded wallpaper "+name, err)
+		}
+
+		destination := filepath.Join(destinationDir, name)
+
+		if existingData, err := os.ReadFile(destination); err == nil {
+			if bytes.Equal(existingData, content) {
+				fmt.Printf("[+] Wallpaper %s already exists and is up to date.\n", name)
+				continue
+			} else {
+				fmt.Printf("[+] Wallpaper %s already exists in ~/Wallpapers.\n", name)
+				if !askYesNo(fmt.Sprintf("Do you want to overwrite wallpaper %s?", name)) {
+					fmt.Printf("[+] Skipping %s\n", name)
+					continue
+				}
+			}
+		}
+
+		if err := os.WriteFile(destination, content, 0644); err != nil {
+			fail("Could not install wallpaper "+name, err)
+		}
+
+		fmt.Printf("[+] Installed wallpaper: %s\n", destination)
+	}
+}
+
 func installLyConfig() {
 	if _, err := exec.LookPath("sudo"); err != nil {
 		fail("sudo is required to install Ly configuration", err)
 	}
 
-	content, err := embeddedFiles.ReadFile("ly.config")
+	embeddedContent, err := embeddedFiles.ReadFile("ly.config")
 	if err != nil {
 		fail("Could not read embedded Ly configuration", err)
+	}
+
+	targetPath := "/etc/ly/config.ini"
+	if existingData, err := os.ReadFile(targetPath); err == nil {
+		if bytes.Equal(existingData, embeddedContent) {
+			status("Ly configuration is already applied and matches the embedded config.")
+			if !askYesNo("Do you want to re-apply/overwrite the Ly configuration?") {
+				status("Skipping Ly configuration installation")
+				return
+			}
+		} else {
+			status("Ly configuration exists but differs from the embedded configuration.")
+			if !askYesNo("Do you want to update the Ly configuration?") {
+				status("Skipping Ly configuration installation")
+				return
+			}
+		}
 	}
 
 	// Write to a temporary user-owned file, then use sudo to install it.
@@ -199,7 +313,7 @@ func installLyConfig() {
 	tempPath := tempFile.Name()
 	defer os.Remove(tempPath)
 
-	if _, err := tempFile.Write(content); err != nil {
+	if _, err := tempFile.Write(embeddedContent); err != nil {
 		tempFile.Close()
 		fail("Could not write temporary Ly configuration file", err)
 	}
@@ -207,8 +321,8 @@ func installLyConfig() {
 		fail("Could not close temporary Ly configuration file", err)
 	}
 
-	status("Installing Ly configuration")
-	if err := run("", "sudo", "install", "-D", "-m", "0644", tempPath, "/etc/ly/config.ini"); err != nil {
+	status("Installing Ly display manager configuration")
+	if err := run("", "sudo", "install", "-D", "-m", "0644", tempPath, targetPath); err != nil {
 		fail("Could not install Ly configuration", err)
 	}
 }
@@ -217,6 +331,17 @@ func installJournalLimit() {
 	const content = `[Journal]
 SystemMaxUse=50M
 `
+	targetPath := "/etc/systemd/journald.conf.d/50-local-size-limit.conf"
+
+	if existingData, err := os.ReadFile(targetPath); err == nil {
+		if strings.Contains(string(existingData), "SystemMaxUse=50M") {
+			status("Journald size limit of 50M is already configured.")
+			if !askYesNo("Do you want to re-apply the journald configuration?") {
+				status("Skipping journald configuration update")
+				return
+			}
+		}
+	}
 
 	tempFile, err := os.CreateTemp("", "journald-limit-*")
 	if err != nil {
@@ -238,37 +363,19 @@ SystemMaxUse=50M
 		"",
 		"sudo", "install", "-D", "-m", "0644",
 		tempPath,
-		"/etc/systemd/journald.conf.d/50-local-size-limit.conf",
+		targetPath,
 	); err != nil {
 		fail("Could not install journald configuration", err)
 	}
 
+	status("Restarting systemd-journald service")
 	if err := run("", "sudo", "systemctl", "restart", "systemd-journald"); err != nil {
 		fail("Could not restart systemd-journald", err)
 	}
 }
 
 func askToOverwriteNvim() bool {
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		fmt.Print("An existing Neovim config was found. Overwrite it with LazyVim? Type yes or no: ")
-
-		answer, err := reader.ReadString('\n')
-		if err != nil && len(answer) == 0 {
-			fmt.Fprintln(os.Stderr, "\n[-] Could not read your response; keeping the existing Neovim config.")
-			return false
-		}
-
-		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "yes", "y":
-			return true
-		case "no", "n":
-			return false
-		default:
-			fmt.Println("Please enter yes or no.")
-		}
-	}
+	return askYesNo("An existing Neovim config was found. Overwrite it with LazyVim?")
 }
 
 func installLazyVim() {
@@ -288,7 +395,7 @@ func installLazyVim() {
 		fail("Could not check the existing Neovim config", err)
 	}
 
-	status("Installing LazyVim")
+	status("Installing LazyVim starter config")
 
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		fail("Could not create the config directory", err)
@@ -369,6 +476,7 @@ bindkey -M menuselect '[Z' reverse-menu-complete
 		return
 	}
 
+	status("Configuring ~/.zshrc with Starship, Fastfetch, and completion settings")
 	file, err := os.OpenFile(zshrcPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fail("Could not open ~/.zshrc", err)
@@ -400,49 +508,90 @@ func setZshAsLoginShell() {
 		fail("Zsh is not installed at "+zshPath, err)
 	}
 
-	status("Changing the login shell to Zsh")
-	if err := run("", "chsh", "-s", zshPath); err != nil {
+	targetUser := os.Getenv("USER")
+	if targetUser == "" {
+		targetUser = os.Getenv("LOGNAME")
+	}
+
+	// Check if current user shell is already Zsh
+	isAlreadyZsh := false
+	if cmdOut, err := exec.Command("getent", "passwd", targetUser).Output(); err == nil {
+		parts := strings.Split(string(cmdOut), ":")
+		if len(parts) >= 7 && strings.TrimSpace(parts[6]) == zshPath {
+			isAlreadyZsh = true
+		}
+	} else if strings.HasSuffix(os.Getenv("SHELL"), "zsh") {
+		isAlreadyZsh = true
+	}
+
+	if isAlreadyZsh {
+		status(fmt.Sprintf("User %s's login shell is already Zsh.", targetUser))
+		if !askYesNo("Do you want to re-apply/re-set the login shell configuration?") {
+			status("Skipping shell change")
+			handleBashrcRemoval()
+			return
+		}
+	}
+
+	status("Ensuring Zsh is registered in /etc/shells")
+
+	shellsData, err := os.ReadFile("/etc/shells")
+	if err != nil {
+		fail("Could not read /etc/shells", err)
+	}
+
+	if !strings.Contains(string(shellsData), zshPath) {
+		tempFile, err := os.CreateTemp("", "shells-*")
+		if err != nil {
+			fail("Could not create temporary file for shells", err)
+		}
+		tempPath := tempFile.Name()
+		defer os.Remove(tempPath)
+
+		_, _ = tempFile.WriteString(string(shellsData) + zshPath + "\n")
+		tempFile.Close()
+
+		if err := run("", "sudo", "install", "-D", "-m", "0644", tempPath, "/etc/shells"); err != nil {
+			fail("Could not update /etc/shells", err)
+		}
+	}
+
+	status(fmt.Sprintf("Changing the login shell to Zsh for user: %s", targetUser))
+	if err := run("", "sudo", "chsh", "-s", zshPath, targetUser); err != nil {
 		fail("Could not change the login shell to Zsh", err)
 	}
 
+	handleBashrcRemoval()
+}
+
+func handleBashrcRemoval() {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		fail("Could not find the user's home directory", err)
 	}
 
 	bashrcPath := filepath.Join(homeDir, ".bashrc")
-	if err := os.Remove(bashrcPath); err != nil && !os.IsNotExist(err) {
-		fail("Could not remove ~/.bashrc", err)
+	if _, err := os.Stat(bashrcPath); err == nil {
+		status("Found existing ~/.bashrc file.")
+		if askYesNo("Do you want to remove ~/.bashrc?") {
+			if err := os.Remove(bashrcPath); err != nil {
+				fail("Could not remove ~/.bashrc", err)
+			}
+			fmt.Println("[+] Removed ~/.bashrc")
+		} else {
+			fmt.Println("[+] Kept ~/.bashrc")
+		}
+	} else if !os.IsNotExist(err) {
+		fail("Could not check ~/.bashrc status", err)
 	}
-
-	fmt.Println("[+] Removed ~/.bashrc")
 }
 
 func askToReboot() bool {
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		fmt.Print("Reboot the system now? Type yes or no: ")
-
-		answer, err := reader.ReadString('\n')
-		if err != nil && len(answer) == 0 {
-			fmt.Fprintln(os.Stderr, "\n[-] Could not read your response; skipping reboot.")
-			return false
-		}
-
-		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "yes", "y":
-			return true
-		case "no", "n":
-			return false
-		default:
-			fmt.Println("Please enter yes or no.")
-		}
-	}
+	return askYesNo("Reboot the system now?")
 }
 
 func enableAndStartLy() {
-	status("Enabling Ly for the next boot")
+	status("Enabling Ly display manager service for the next boot")
 
 	if err := run("", "sudo", "systemctl", "enable", "ly@tty1.service"); err != nil {
 		fail("Could not enable Ly", err)
@@ -451,11 +600,11 @@ func enableAndStartLy() {
 
 func rebootIfSelected() {
 	if !askToReboot() {
-		status("Reboot skipped")
+		status("Reboot skipped by user")
 		return
 	}
 
-	status("Rebooting")
+	status("Rebooting system")
 	if err := run("", "sudo", "systemctl", "reboot"); err != nil {
 		fail("Could not reboot the system", err)
 	}
@@ -480,6 +629,7 @@ func main() {
 	installYay()
 	installPackages(packages)
 	installTemplates()
+	installWallpapers()
 	installLazyVim()
 	installZshConfig()
 	setZshAsLoginShell()
@@ -488,6 +638,5 @@ func main() {
 	enableAndStartLy()
 	rebootIfSelected()
 
-	status("Setup complete")
+	status("Setup complete successfully!")
 }
-
